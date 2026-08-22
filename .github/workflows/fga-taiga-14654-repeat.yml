@@ -1,0 +1,240 @@
+name: FGA Taiga UI 14654 repeat replay
+
+on:
+  push:
+    branches:
+      - validation/14654-repeat-replay-v1
+    paths:
+      - .github/workflows/fga-taiga-14654-repeat.yml
+      - .fga-validation/14654/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fga-taiga-14654-repeat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repeat-replay:
+    name: Same-condition replay repeat ${{ matrix.repeat }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        repeat: [2, 3]
+    env:
+      UPSTREAM_SHA: 4d72ec26c4d353af3de01a9e17a35c87a91744a6
+      PATCH_PATH: ${{ github.workspace }}/runner/.fga-validation/14654/taiga-ui-14654.patch
+      PATCH_DIGEST_PATH: ${{ github.workspace }}/runner/.fga-validation/14654/taiga-ui-14654.patch.sha256
+      CONTRACT_MODEL: ${{ github.workspace }}/runner/.fga-validation/14654/contract-model.test.mjs
+      SUMMARY_SCRIPT: ${{ github.workspace }}/runner/.fga-validation/14654/summarize-playwright.mjs
+      CI: '1'
+      TUI_CI: 'true'
+      HUSKY: '0'
+      NX_CLOUD: 'false'
+      NX_DAEMON: 'false'
+      NG_SERVER_PORT: '3333'
+      DEMO_DIR: dist/demo/browser
+
+    steps:
+      - name: Check out public validation packet
+        uses: actions/checkout@v4
+        with:
+          path: runner
+
+      - name: Check out exact Taiga UI upstream revision
+        uses: actions/checkout@v4
+        with:
+          repository: taiga-family/taiga-ui
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: taiga-ui
+          fetch-depth: 1
+
+      - name: Set up Node 26
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: taiga-ui/package-lock.json
+
+      - name: Verify exact public identities and bounded model
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_upstream="$(git -C taiga-ui rev-parse HEAD)"
+          actual_patch="$(sha256sum "$PATCH_PATH" | awk '{print $1}')"
+          expected_patch="$(tr -d '[:space:]' < "$PATCH_DIGEST_PATH")"
+          test "$actual_upstream" = "$UPSTREAM_SHA"
+          test "$actual_patch" = "$expected_patch"
+          git -C taiga-ui apply --check --verbose "$PATCH_PATH"
+          node "$CONTRACT_MODEL"
+          echo "PATCH_SHA256=$actual_patch" >> "$GITHUB_ENV"
+          {
+            echo "repeat=${{ matrix.repeat }}"
+            echo "runner_commit=${GITHUB_SHA}"
+            echo "upstream=$actual_upstream"
+            echo "patch_sha256=$actual_patch"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+          } | tee identity.txt
+
+      - name: Install exact dependencies and Chromium
+        working-directory: taiga-ui
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium
+          echo "PLAYWRIGHT_VERSION=$(npx playwright --version)" >> "$GITHUB_ENV"
+
+      - name: Replay exact upstream BEFORE with candidate assertions only
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd taiga-ui
+          git reset --hard "$UPSTREAM_SHA"
+          git clean -fd
+          git apply "$PATCH_PATH"
+          git checkout "$UPSTREAM_SHA" -- \
+            projects/core/components/textfield/textfield.component.ts \
+            projects/core/components/textfield/textfield.template.html
+
+          npx nx type-check demo-playwright
+          npx nx build demo
+          test -f "$DEMO_DIR/index.html"
+
+          npx --yes --package=local-web-server@5.4.0 ws \
+            --port "$NG_SERVER_PORT" --directory "$DEMO_DIR" --spa index.html \
+            > "$GITHUB_WORKSPACE/baseline-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            curl --fail --silent "http://127.0.0.1:${NG_SERVER_PORT}/" >/dev/null && break
+            test "$attempt" -lt 60 || { cat "$GITHUB_WORKSPACE/baseline-server.log"; exit 1; }
+            sleep 1
+          done
+
+          set +e
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$GITHUB_WORKSPACE/baseline-report.json" \
+            npx playwright test \
+              --config projects/demo-playwright/playwright.config.ts \
+              --project chromium --workers 1 --retries 0 --reporter json \
+              projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts \
+              > "$GITHUB_WORKSPACE/baseline-playwright.log" 2>&1
+          baseline_exit=$?
+          set -e
+          echo "exit_code=$baseline_exit" >> "$GITHUB_OUTPUT"
+          test "$baseline_exit" -ne 0
+          node "$SUMMARY_SCRIPT" before \
+            "$GITHUB_WORKSPACE/baseline-report.json" \
+            "$GITHUB_WORKSPACE/baseline-summary.json"
+
+      - name: Replay candidate AFTER under identical browser contract
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd taiga-ui
+          git reset --hard "$UPSTREAM_SHA"
+          git clean -fd
+          git apply "$PATCH_PATH"
+
+          npx prettier --check \
+            projects/core/components/textfield/textfield.component.ts \
+            projects/core/components/textfield/textfield.template.html \
+            projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts
+          npx eslint \
+            projects/core/components/textfield/textfield.component.ts \
+            projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts
+          npx nx type-check demo-playwright
+          npx nx build core
+          npx nx build demo
+          test -f "$DEMO_DIR/index.html"
+
+          npx --yes --package=local-web-server@5.4.0 ws \
+            --port "$NG_SERVER_PORT" --directory "$DEMO_DIR" --spa index.html \
+            > "$GITHUB_WORKSPACE/candidate-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            curl --fail --silent "http://127.0.0.1:${NG_SERVER_PORT}/" >/dev/null && break
+            test "$attempt" -lt 60 || { cat "$GITHUB_WORKSPACE/candidate-server.log"; exit 1; }
+            sleep 1
+          done
+
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$GITHUB_WORKSPACE/candidate-report.json" \
+            npx playwright test \
+              --config projects/demo-playwright/playwright.config.ts \
+              --project chromium --workers 1 --retries 0 --reporter json \
+              projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts \
+              > "$GITHUB_WORKSPACE/candidate-playwright.log" 2>&1
+          node "$SUMMARY_SCRIPT" after \
+            "$GITHUB_WORKSPACE/candidate-report.json" \
+            "$GITHUB_WORKSPACE/candidate-summary.json"
+          echo "exit_code=0" >> "$GITHUB_OUTPUT"
+
+      - name: Build repeat receipt
+        if: always()
+        shell: bash
+        env:
+          BASELINE_EXIT: ${{ steps.baseline.outputs.exit_code }}
+          CANDIDATE_EXIT: ${{ steps.candidate.outputs.exit_code }}
+          REPEAT_INDEX: ${{ matrix.repeat }}
+        run: |
+          mkdir -p repeat-receipt
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const readJson = (file) => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+          const sha = (file) => fs.existsSync(file)
+            ? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+            : '';
+          const before = readJson('baseline-summary.json');
+          const after = readJson('candidate-summary.json');
+          const passed = Boolean(before && after && Number(process.env.BASELINE_EXIT) !== 0 && Number(process.env.CANDIDATE_EXIT) === 0);
+          const receipt = {
+            schema: 'fga-taiga-ui-14654-repeat-replay-v1',
+            repeatIndex: Number(process.env.REPEAT_INDEX),
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            validationCommit: process.env.GITHUB_SHA,
+            upstreamSha: process.env.UPSTREAM_SHA,
+            patchSha256: process.env.PATCH_SHA256,
+            environment: {
+              runner: 'ubuntu-24.04',
+              node: process.version,
+              playwright: process.env.PLAYWRIGHT_VERSION || '',
+              chromium: 'playwright-managed',
+              workers: 1,
+              retries: 0,
+            },
+            before: {exitCode: Number(process.env.BASELINE_EXIT || -1), summary: before, reportSha256: sha('baseline-report.json')},
+            after: {exitCode: Number(process.env.CANDIDATE_EXIT || -1), summary: after, reportSha256: sha('candidate-report.json')},
+            decision: passed ? 'CANDIDATE_SAME_CONDITION_REPEAT_PASS' : 'NOT_EVALUATED',
+            status: 'INFERRED',
+            scoreable: false,
+            requiresHumanConfirm: true,
+            finalVerifierEligible: false,
+            canClaimVerifiedFixed: false,
+            claimBoundary: 'Public repeat replay only. Sandbox admission, independent contract, blind annotation, maintainer acceptance, release, deployment, outcome and VERIFIED_FIXED remain unestablished.',
+          };
+          fs.writeFileSync('repeat-receipt/receipt.json', `${JSON.stringify(receipt, null, 2)}\n`);
+          NODE
+          cp identity.txt repeat-receipt/
+          cp baseline-summary.json baseline-report.json baseline-playwright.log baseline-server.log repeat-receipt/ 2>/dev/null || true
+          cp candidate-summary.json candidate-report.json candidate-playwright.log candidate-server.log repeat-receipt/ 2>/dev/null || true
+          (cd repeat-receipt && sha256sum * > MANIFEST.sha256)
+
+      - name: Upload repeat receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taiga-ui-14654-repeat-${{ matrix.repeat }}
+          path: repeat-receipt
+          if-no-files-found: error
+          retention-days: 30
