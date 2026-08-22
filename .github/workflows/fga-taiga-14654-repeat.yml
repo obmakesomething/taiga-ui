@@ -1,0 +1,71 @@
+name: FGA Taiga UI 14654 repeat replay
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/fga-taiga-14654-repeat.yml
+      - .fga-validation/14654/**
+  push:
+    branches:
+      - validation/14654-repeat-replay-v2
+    paths:
+      - .github/workflows/fga-taiga-14654-repeat.yml
+      - .fga-validation/14654/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fga-taiga-14654-repeat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repeat-replay:
+    name: Same-condition replay repeat ${{ matrix.repeat }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        repeat: [2, 3]
+
+    steps:
+      - name: Check out public validation packet
+        uses: actions/checkout@v4
+        with:
+          path: runner
+
+      - name: Check out exact Taiga UI upstream revision
+        uses: actions/checkout@v4
+        with:
+          repository: taiga-family/taiga-ui
+          ref: 4d72ec26c4d353af3de01a9e17a35c87a91744a6
+          path: taiga-ui
+          fetch-depth: 1
+
+      - name: Set up Node 26
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: taiga-ui/package-lock.json
+
+      - name: Execute bounded repeat replay
+        env:
+          CI: '1'
+          TUI_CI: 'true'
+          HUSKY: '0'
+          NX_CLOUD: 'false'
+          NX_DAEMON: 'false'
+        run: runner/.fga-validation/14654/run-repeat.sh '${{ matrix.repeat }}'
+
+      - name: Upload bounded repeat receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taiga-ui-14654-repeat-${{ matrix.repeat }}
+          path: repeat-receipt
+          if-no-files-found: error
+          retention-days: 30

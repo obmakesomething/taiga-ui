@@ -1,0 +1,82 @@
+diff --git a/projects/core/components/textfield/textfield.component.ts b/projects/core/components/textfield/textfield.component.ts
+--- a/projects/core/components/textfield/textfield.component.ts
++++ b/projects/core/components/textfield/textfield.component.ts
+@@ -17,6 +17,6 @@ import {NgControl} from '@angular/forms';
+ import {TuiControl} from '@taiga-ui/cdk/classes';
+ import {TUI_VERSION} from '@taiga-ui/cdk/constants';
+ import {type TuiContext} from '@taiga-ui/cdk/types';
+-import {tuiInjectElement, tuiValue} from '@taiga-ui/cdk/utils/dom';
++import {tuiInjectElement, tuiIsElementEditable, tuiValue} from '@taiga-ui/cdk/utils/dom';
+ import {tuiFocusedIn} from '@taiga-ui/cdk/utils/focus';
+ import {tuiPx} from '@taiga-ui/cdk/utils/miscellaneous';
+@@ -174,6 +174,14 @@ export class TuiTextfieldComponent<T> implements TuiDataListHost<T> {
+         this.el.style.setProperty('--t-side', tuiPx(clientWidth));
+     }
+ 
++    protected onCleanerClick(): void {
++        this.accessor()?.setValue(null);
++
++        if (this.dropdown.content() && tuiIsElementEditable(this.open.nativeElement)) {
++            this.open.toggle(true);
++        }
++    }
++
+     // Click on ::before,::after pseudo-elements ([iconStart] / [iconEnd])
+     protected onIconClick(): void {
+         this.input()?.nativeElement.focus();
+diff --git a/projects/core/components/textfield/textfield.template.html b/projects/core/components/textfield/textfield.template.html
+--- a/projects/core/components/textfield/textfield.template.html
++++ b/projects/core/components/textfield/textfield.template.html
+@@ -14,7 +14,7 @@
+         <button
+             tabindex="-1"
+             tuiButtonX
+-            (click)="accessor()?.setValue(null)"
++            (click)="onCleanerClick()"
+         >
+             {{ clear() }}
+         </button>
+diff --git a/projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts b/projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts
+--- a/projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts
++++ b/projects/demo-playwright/tests/core/input/textfield-cleaner.pw.spec.ts
+@@ -25,8 +25,9 @@ describe('Textfield cleaner', () => {
+         test('ComboBox', async ({page}) => {
+             await tuiGoto(page, `${DemoRoute.ComboBox}/API?tuiTextfieldCleaner=true`);
+ 
+             await input.fill('auStRia');
+             await expect(input).toHaveValue('Austria');
+             await cleaner.click();
+             await expect(input).toHaveValue('');
++            await expect(page.locator('tui-dropdown')).toBeVisible();
+         });
+@@ -37,4 +38,5 @@ describe('Textfield cleaner', () => {
+             await expect(input).toHaveValue('USA');
+             await cleaner.click();
+             await expect(input).toHaveValue('');
++            await expect(page.locator('tui-dropdown')).toBeVisible();
+         });
+@@ -74,8 +76,9 @@ describe('Textfield cleaner', () => {
+         test('InputDate', async ({page}) => {
+             await tuiGoto(page, `${DemoRoute.InputDate}/API?tuiTextfieldCleaner=true`);
+ 
+             await input.pressSequentially('992025');
+             await expect(input).toHaveValue('09.09.2025');
+             await cleaner.click();
+             await expect(input).toHaveValue('');
++            await expect(page.locator('tui-dropdown')).toBeVisible();
+         });
+@@ -89,5 +92,6 @@ describe('Textfield cleaner', () => {
+             await input.pressSequentially('992025'.repeat(2));
+             await expect(input).toHaveValue('09.09.2025 – 09.09.2025');
+             await cleaner.click();
+             await expect(input).toHaveValue('');
++            await expect(page.locator('tui-dropdown')).toBeVisible();
+         });
+@@ -103,6 +107,7 @@ describe('Textfield cleaner', () => {
+             await calendarMonth.month.nth(8).click();
+             await expect(inputMonth.textfield).toHaveValue('September 2020');
+ 
+             await cleaner.click();
+             await expect(input).toHaveValue('');
++            await expect(page.locator('tui-dropdown')).toBeVisible();
+         });
